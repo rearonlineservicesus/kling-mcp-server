@@ -39,11 +39,26 @@ function buildServer() {
         name: "kling-ai",
         version: "1.0.0",
     });
-    server.tool("kling_text_to_video", "Generate a Kling AI video from text.", {
+    server.tool("kling_text_to_video", "Generate a Kling AI video from text. Defaults to the highest-quality model (kling-v2-6) in pro mode. Override only if user explicitly requests a smaller/faster model.", {
         prompt: z.string(),
         negative_prompt: z.string().optional(),
         cfg_scale: z.number().optional(),
-        mode: z.enum(["std", "pro"]).default("std"),
+        model_name: z
+            .enum([
+            "kling-v1",
+            "kling-v1-5",
+            "kling-v1-6",
+            "kling-v2-master",
+            "kling-v2-1-master",
+            "kling-v2-5-turbo",
+            "kling-v2-6",
+        ])
+            .default("kling-v2-6")
+            .describe("Kling model version. Default kling-v2-6 (best quality, newest). Use kling-v2-5-turbo for faster output. Use older versions only if the user explicitly requests them."),
+        mode: z
+            .enum(["std", "pro"])
+            .default("pro")
+            .describe("Quality mode. 'pro' = higher quality (default). 'std' = faster/cheaper. Always use pro unless the user explicitly asks for speed."),
         duration: z.enum(["5", "10"]).default("5"),
         aspect_ratio: z.enum(["16:9", "9:16", "1:1"]).default("16:9"),
     }, async (args) => {
@@ -55,10 +70,25 @@ function buildServer() {
             content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         };
     });
-    server.tool("kling_image_to_video", "Generate a Kling AI video from an image.", {
+    server.tool("kling_image_to_video", "Generate a Kling AI video from an image. Defaults to highest-quality model (kling-v2-6) in pro mode.", {
         image: z.string(),
         prompt: z.string().optional(),
-        mode: z.enum(["std", "pro"]).default("std"),
+        model_name: z
+            .enum([
+            "kling-v1",
+            "kling-v1-5",
+            "kling-v1-6",
+            "kling-v2-master",
+            "kling-v2-1-master",
+            "kling-v2-5-turbo",
+            "kling-v2-6",
+        ])
+            .default("kling-v2-6")
+            .describe("Kling model version. Default kling-v2-6 (best). Use older versions only on explicit user request."),
+        mode: z
+            .enum(["std", "pro"])
+            .default("pro")
+            .describe("Quality mode. 'pro' (default) = higher quality. 'std' = faster/cheaper. Use pro unless user asks for speed."),
         duration: z.enum(["5", "10"]).default("5"),
     }, async (args) => {
         const result = await klingRequest("/v1/videos/image2video", {

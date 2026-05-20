@@ -21,7 +21,7 @@ function klingToken(): string {
       exp: now + 1800,
       nbf: now - 5
     },
-    SECRET_KEY,
+    SECRET_KEY as string,
     {
       algorithm: "HS256",
       header: {

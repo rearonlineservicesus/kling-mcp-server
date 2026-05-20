@@ -139,6 +139,8 @@ server.tool(
 const app = express();
 app.use(express.json());
 
+const transports: Record<string, StreamableHTTPServerTransport> = {};
+
 app.get("/", (_req, res) => {
   res.json({
     status: "Kling AI Remote MCP Server running",
@@ -146,17 +148,53 @@ app.get("/", (_req, res) => {
   });
 });
 
+app.get("/mcp", async (req, res) => {
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
+  if (!sessionId || !transports[sessionId]) {
+    res.status(400).send("Invalid or missing MCP session ID");
+    return;
+  }
+
+  await transports[sessionId].handleRequest(req, res);
+});
+
 app.post("/mcp", async (req, res) => {
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: () => randomUUID(),
-  });
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
-  res.on("close", () => {
-    transport.close();
-  });
+  let transport: StreamableHTTPServerTransport;
 
-  await server.connect(transport);
+  if (sessionId && transports[sessionId]) {
+    transport = transports[sessionId];
+  } else {
+    transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: (newSessionId) => {
+        transports[newSessionId] = transport;
+      },
+    });
+
+    transport.onclose = () => {
+      if (transport.sessionId) {
+        delete transports[transport.sessionId];
+      }
+    };
+
+    await server.connect(transport);
+  }
+
   await transport.handleRequest(req, res, req.body);
+});
+
+app.delete("/mcp", async (req, res) => {
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
+  if (!sessionId || !transports[sessionId]) {
+    res.status(400).send("Invalid or missing MCP session ID");
+    return;
+  }
+
+  await transports[sessionId].handleRequest(req, res);
 });
 
 const PORT = Number(process.env.PORT) || 8080;

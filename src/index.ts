@@ -1,117 +1,109 @@
-#!/usr/bin/env node
 import dotenv from "dotenv";
 dotenv.config();
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import express from "express";
 import jwt from "jsonwebtoken";
+import axios from "axios";
+import { randomUUID } from "crypto";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 
 const ACCESS_KEY = process.env.KLING_ACCESS_KEY;
 const SECRET_KEY = process.env.KLING_SECRET_KEY;
-const API_BASE = process.env.KLING_API_BASE ?? "https://api-singapore.klingai.com";
+const API_BASE_URL =
+  process.env.KLING_API_BASE_URL || "https://api-singapore.klingai.com";
 
 if (!ACCESS_KEY || !SECRET_KEY) {
-  console.error("Missing KLING_ACCESS_KEY or KLING_SECRET_KEY environment variable.");
-  process.exit(1);
+  throw new Error("Missing KLING_ACCESS_KEY or KLING_SECRET_KEY");
 }
 
-function klingToken(): string {
+function createKlingToken() {
   const now = Math.floor(Date.now() / 1000);
+
   return jwt.sign(
     {
       iss: ACCESS_KEY,
       exp: now + 1800,
-      nbf: now - 5
+      nbf: now - 5,
     },
     SECRET_KEY as string,
     {
       algorithm: "HS256",
       header: {
         alg: "HS256",
-        typ: "JWT"
-      }
+        typ: "JWT",
+      },
     }
   );
 }
 
-async function klingRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
+async function klingRequest(path: string, options: any = {}) {
+  const token = createKlingToken();
+
+  const response = await axios({
+    baseURL: API_BASE_URL,
+    url: path,
+    method: options.method || "GET",
+    data: options.data,
     headers: {
+      Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
-      Authorization: `Bearer ${klingToken()}`,
-      ...(init.headers ?? {})
-    }
+    },
   });
 
-  const text = await response.text();
-  let body: unknown;
-  try {
-    body = text ? JSON.parse(text) : {};
-  } catch {
-    body = { raw: text };
-  }
-
-  if (!response.ok) {
-    throw new Error(`Kling API error ${response.status}: ${JSON.stringify(body)}`);
-  }
-
-  return body as T;
+  return response.data;
 }
 
 const server = new McpServer({
-  name: "kling-mcp-server",
-  version: "0.1.0"
+  name: "kling-ai",
+  version: "1.0.0",
 });
 
 server.tool(
   "kling_text_to_video",
-  "Create a Kling AI text-to-video generation task.",
+  "Create a Kling AI video from a text prompt.",
   {
-    prompt: z.string().min(1).max(2500),
-    model_name: z.string().default("kling-v3"),
-    mode: z.enum(["std", "pro", "4k"]).default("std"),
-    duration: z.string().default("5"),
-    aspect_ratio: z.string().default("16:9"),
+    prompt: z.string(),
+    model_name: z.string().default("kling-v1"),
     negative_prompt: z.string().optional(),
-    cfg_scale: z.number().min(0).max(1).optional(),
-    external_task_id: z.string().optional()
+    cfg_scale: z.number().optional(),
+    mode: z.enum(["std", "pro"]).default("std"),
+    aspect_ratio: z.enum(["16:9", "9:16", "1:1"]).default("16:9"),
+    duration: z.enum(["5", "10"]).default("5"),
   },
   async (args) => {
     const result = await klingRequest("/v1/videos/text2video", {
       method: "POST",
-      body: JSON.stringify(args)
+      data: args,
     });
 
     return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }]
+      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
     };
   }
 );
 
 server.tool(
   "kling_image_to_video",
-  "Create a Kling AI image-to-video generation task. image must be a URL or base64 string accepted by Kling.",
+  "Create a Kling AI video from an image URL and prompt.",
   {
-    image: z.string().min(1),
-    prompt: z.string().max(2500).optional(),
-    model_name: z.string().default("kling-v3"),
-    mode: z.enum(["std", "pro", "4k"]).default("std"),
-    duration: z.string().default("5"),
-    aspect_ratio: z.string().default("16:9"),
+    image: z.string(),
+    prompt: z.string().optional(),
+    model_name: z.string().default("kling-v1"),
     negative_prompt: z.string().optional(),
-    cfg_scale: z.number().min(0).max(1).optional(),
-    external_task_id: z.string().optional()
+    cfg_scale: z.number().optional(),
+    mode: z.enum(["std", "pro"]).default("std"),
+    duration: z.enum(["5", "10"]).default("5"),
   },
   async (args) => {
     const result = await klingRequest("/v1/videos/image2video", {
       method: "POST",
-      body: JSON.stringify(args)
+      data: args,
     });
 
     return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }]
+      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
     };
   }
 );
@@ -122,7 +114,7 @@ server.tool(
   {
     task_id: z.string().optional(),
     external_task_id: z.string().optional(),
-    task_type: z.enum(["text2video", "image2video"]).default("text2video")
+    task_type: z.enum(["text2video", "image2video"]).default("text2video"),
   },
   async ({ task_id, external_task_id, task_type }) => {
     if (!task_id && !external_task_id) {
@@ -137,11 +129,38 @@ server.tool(
       : `/v1/videos/${task_type}?${query.toString()}`;
 
     const result = await klingRequest(path, { method: "GET" });
+
     return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }]
+      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
     };
   }
 );
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
+const app = express();
+app.use(express.json());
+
+app.get("/", (_req, res) => {
+  res.json({
+    status: "Kling AI Remote MCP Server running",
+    mcp_endpoint: "/mcp",
+  });
+});
+
+app.post("/mcp", async (req, res) => {
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: () => randomUUID(),
+  });
+
+  res.on("close", () => {
+    transport.close();
+  });
+
+  await server.connect(transport);
+  await transport.handleRequest(req, res, req.body);
+});
+
+const PORT = Number(process.env.PORT) || 8080;
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Kling AI Remote MCP Server running on port ${PORT}`);
+});

@@ -12,16 +12,19 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "latest",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "axios": "^1.16.1",
     "dotenv": "^17.4.2",
-    "jsonwebtoken": "latest",
-    "zod": "latest"
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/jsonwebtoken": "latest",
-    "@types/node": "latest",
+    "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^25.9.1",
     "tsx": "latest",
-    "typescript": "latest"
+    "typescript": "^6.0.3"
   },
   "engines": {
     "node": ">=20"

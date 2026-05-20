@@ -1,17 +1,18 @@
 import dotenv from "dotenv";
 dotenv.config();
 import express from "express";
-import jwt from "jsonwebtoken";
+import cors from "cors";
 import axios from "axios";
-import { randomUUID } from "crypto";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import jwt from "jsonwebtoken";
 import { z } from "zod";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 const ACCESS_KEY = process.env.KLING_ACCESS_KEY;
 const SECRET_KEY = process.env.KLING_SECRET_KEY;
-const API_BASE_URL = process.env.KLING_API_BASE_URL || "https://api-singapore.klingai.com";
+const API_BASE_URL = process.env.KLING_API_BASE_URL ||
+    "https://api-singapore.klingai.com";
 if (!ACCESS_KEY || !SECRET_KEY) {
-    throw new Error("Missing KLING_ACCESS_KEY or KLING_SECRET_KEY");
+    throw new Error("Missing KLING_ACCESS_KEY or KLING_SECRET_KEY environment variable.");
 }
 function createKlingToken() {
     const now = Math.floor(Date.now() / 1000);
@@ -45,29 +46,32 @@ const server = new McpServer({
     name: "kling-ai",
     version: "1.0.0",
 });
-server.tool("kling_text_to_video", "Create a Kling AI video from a text prompt.", {
+server.tool("kling_text_to_video", "Generate a Kling AI video from text.", {
     prompt: z.string(),
-    model_name: z.string().default("kling-v1"),
     negative_prompt: z.string().optional(),
     cfg_scale: z.number().optional(),
     mode: z.enum(["std", "pro"]).default("std"),
-    aspect_ratio: z.enum(["16:9", "9:16", "1:1"]).default("16:9"),
     duration: z.enum(["5", "10"]).default("5"),
+    aspect_ratio: z
+        .enum(["16:9", "9:16", "1:1"])
+        .default("16:9"),
 }, async (args) => {
     const result = await klingRequest("/v1/videos/text2video", {
         method: "POST",
         data: args,
     });
     return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        content: [
+            {
+                type: "text",
+                text: JSON.stringify(result, null, 2),
+            },
+        ],
     };
 });
-server.tool("kling_image_to_video", "Create a Kling AI video from an image URL and prompt.", {
+server.tool("kling_image_to_video", "Generate a Kling AI video from an image.", {
     image: z.string(),
     prompt: z.string().optional(),
-    model_name: z.string().default("kling-v1"),
-    negative_prompt: z.string().optional(),
-    cfg_scale: z.number().optional(),
     mode: z.enum(["std", "pro"]).default("std"),
     duration: z.enum(["5", "10"]).default("5"),
 }, async (args) => {
@@ -76,76 +80,60 @@ server.tool("kling_image_to_video", "Create a Kling AI video from an image URL a
         data: args,
     });
     return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        content: [
+            {
+                type: "text",
+                text: JSON.stringify(result, null, 2),
+            },
+        ],
     };
 });
-server.tool("kling_get_video_task", "Get the status/result of a Kling AI video generation task.", {
-    task_id: z.string().optional(),
-    external_task_id: z.string().optional(),
-    task_type: z.enum(["text2video", "image2video"]).default("text2video"),
-}, async ({ task_id, external_task_id, task_type }) => {
-    if (!task_id && !external_task_id) {
-        throw new Error("Provide either task_id or external_task_id.");
-    }
-    const query = new URLSearchParams();
-    if (external_task_id)
-        query.set("external_task_id", external_task_id);
-    const path = task_id
-        ? `/v1/videos/${task_type}/${encodeURIComponent(task_id)}`
-        : `/v1/videos/${task_type}?${query.toString()}`;
-    const result = await klingRequest(path, { method: "GET" });
+server.tool("kling_get_video_task", "Get Kling AI task status.", {
+    task_id: z.string(),
+    task_type: z
+        .enum(["text2video", "image2video"])
+        .default("text2video"),
+}, async ({ task_id, task_type }) => {
+    const result = await klingRequest(`/v1/videos/${task_type}/${task_id}`, {
+        method: "GET",
+    });
     return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        content: [
+            {
+                type: "text",
+                text: JSON.stringify(result, null, 2),
+            },
+        ],
     };
 });
 const app = express();
+app.use(cors());
 app.use(express.json());
 const transports = {};
 app.get("/", (_req, res) => {
     res.json({
-        status: "Kling AI Remote MCP Server running",
-        mcp_endpoint: "/mcp",
+        status: "Kling AI SSE MCP Server running",
+        endpoint: "/sse",
     });
 });
-app.get("/mcp", async (req, res) => {
-    const sessionId = req.headers["mcp-session-id"];
-    if (!sessionId || !transports[sessionId]) {
-        res.status(400).send("Invalid or missing MCP session ID");
+app.get("/sse", async (req, res) => {
+    const transport = new SSEServerTransport("/messages", res);
+    transports[transport.sessionId] = transport;
+    res.on("close", () => {
+        delete transports[transport.sessionId];
+    });
+    await server.connect(transport);
+});
+app.post("/messages", async (req, res) => {
+    const sessionId = req.query.sessionId;
+    const transport = transports[sessionId];
+    if (!transport) {
+        res.status(400).send("No transport found");
         return;
     }
-    await transports[sessionId].handleRequest(req, res);
-});
-app.post("/mcp", async (req, res) => {
-    const sessionId = req.headers["mcp-session-id"];
-    let transport;
-    if (sessionId && transports[sessionId]) {
-        transport = transports[sessionId];
-    }
-    else {
-        transport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: () => randomUUID(),
-            onsessioninitialized: (newSessionId) => {
-                transports[newSessionId] = transport;
-            },
-        });
-        transport.onclose = () => {
-            if (transport.sessionId) {
-                delete transports[transport.sessionId];
-            }
-        };
-        await server.connect(transport);
-    }
-    await transport.handleRequest(req, res, req.body);
-});
-app.delete("/mcp", async (req, res) => {
-    const sessionId = req.headers["mcp-session-id"];
-    if (!sessionId || !transports[sessionId]) {
-        res.status(400).send("Invalid or missing MCP session ID");
-        return;
-    }
-    await transports[sessionId].handleRequest(req, res);
+    await transport.handlePostMessage(req, res, req.body);
 });
 const PORT = Number(process.env.PORT) || 8080;
 app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Kling AI Remote MCP Server running on port ${PORT}`);
+    console.log(`Kling AI SSE MCP Server running on port ${PORT}`);
 });

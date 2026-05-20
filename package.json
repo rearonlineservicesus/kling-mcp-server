@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "latest",
+    "dotenv": "^17.4.2",
     "jsonwebtoken": "latest",
     "zod": "latest"
   },
